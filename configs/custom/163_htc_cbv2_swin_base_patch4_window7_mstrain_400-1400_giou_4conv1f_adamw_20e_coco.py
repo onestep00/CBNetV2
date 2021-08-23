@@ -394,10 +394,11 @@ log_config = dict(
 )
 
 evaluation = dict(  # The config to build the evaluation hook, refer to https://github.com/open-mmlab/mmdetection/blob/master/mmdet/core/evaluation/eval_hooks.py#L7 for more details.
-    interval=1, metric=["bbox"]  # Evaluation interval
+    interval=5, metric=["bbox"]  # Evaluation interval
 )
 
-workflow = [("train", 5), ("val", 1)]
+workflow = [("train", 1)]
+# workflow = [("train", 5), ("val", 1)]
 # workflow = [("val", 1)]
 
 resume_from = "/home/jovyan/workspace/ml_mg/cbnetev2/work_dirs/163_htc_cbv2_swin_base_patch4_window7_mstrain_400-1400_giou_4conv1f_adamw_20e_coco/latest.pth"
