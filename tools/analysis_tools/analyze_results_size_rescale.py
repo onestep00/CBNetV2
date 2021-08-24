@@ -1,13 +1,34 @@
 import argparse
 import os.path as osp
+from tools.utils.custom_mean_ap import eval_map
 
 import mmcv
 import numpy as np
 from mmcv import Config, DictAction
 
-from mmdet.core.evaluation import eval_map
+# from mmdet.core.evaluation import eval_map
+
 from mmdet.core.visualization import imshow_gt_det_bboxes
 from mmdet.datasets import build_dataset, get_loading_pipeline
+
+import ray
+from tqdm import tqdm
+
+
+def to_iterator(obj_ids):
+    while obj_ids:
+        done, obj_ids = ray.wait(obj_ids)
+        yield ray.get(done[0])
+
+
+@ray.remote
+def calc_mAP(i, result, dataset, eval_fn):
+    # self.dataset[i] should not call directly
+    # because there is a risk of mismatch
+    data_info = dataset.prepare_train_img(i)
+    mAP = eval_fn(result, data_info["ann_info"])
+
+    return (i, mAP)
 
 
 def bbox_map_eval(det_result, annotation):
@@ -41,7 +62,11 @@ def bbox_map_eval(det_result, annotation):
     mean_aps = []
     for thr in iou_thrs:
         mean_ap, _ = eval_map(
-            bbox_det_result, [annotation], iou_thr=thr, logger="silent"
+            bbox_det_result,
+            [annotation],
+            iou_thr=thr,
+            logger="silent",
+            nproc=0,
         )
         mean_aps.append(mean_ap)
     return sum(mean_aps) / len(mean_aps)
@@ -114,15 +139,23 @@ class ResultVisualizer:
         else:
             assert callable(eval_fn)
 
-        prog_bar = mmcv.ProgressBar(len(results))
+        # prog_bar = mmcv.ProgressBar(len(results))
         _mAPs = {}
-        for i, (result,) in enumerate(zip(results)):
-            # self.dataset[i] should not call directly
-            # because there is a risk of mismatch
-            data_info = dataset.prepare_train_img(i)
-            mAP = eval_fn(result, data_info["ann_info"])
+        # for i, (result,) in enumerate(zip(results)):
+        #     # self.dataset[i] should not call directly
+        #     # because there is a risk of mismatch
+        #     data_info = dataset.prepare_train_img(i)
+        #     mAP = eval_fn(result, data_info["ann_info"])
+        #     _mAPs[i] = mAP
+        #     prog_bar.update()
+
+        ray_dataset = ray.put(dataset)
+        results_ref = [
+            calc_mAP.remote(i, result, ray_dataset, eval_fn)
+            for i, (result,) in enumerate(zip(results))
+        ]
+        for (i, mAP) in tqdm(to_iterator(results_ref), total=len(results_ref)):
             _mAPs[i] = mAP
-            prog_bar.update()
 
         # descending select topk image
         _mAPs = list(sorted(_mAPs.items(), key=lambda kv: kv[1]))
@@ -193,10 +226,13 @@ def main():
     dataset = build_dataset(cfg.data.test)
     outputs = mmcv.load(args.prediction_path)
 
+    ray.init(num_cpus=16, num_gpus=1)
+
     result_visualizer = ResultVisualizer(args.show, args.wait_time, args.show_score_thr)
     result_visualizer.evaluate_and_show(
         dataset, outputs, topk=args.topk, show_dir=args.show_dir
     )
+    ray.shutdown()
 
 
 if __name__ == "__main__":
